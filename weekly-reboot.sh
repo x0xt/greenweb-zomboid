@@ -15,6 +15,10 @@ sleep 50
 send_msg "[NOTICE] Going down now. Back in a moment."
 sleep 10
 
+# flush world save before stopping so nothing gets wiped
+cd /home/pzserver && $LGSM send "save"
+sleep 15
+
 systemctl stop pzserver
 sudo -u pzserver bash -c 'cd /home/pzserver && ./pzserver update'
 systemctl start pzserver
