@@ -1,0 +1,2 @@
+# Nightly update + restart with warnings at 3:58am
+58 3 * * * root /home/pzserver/weekly-reboot.sh

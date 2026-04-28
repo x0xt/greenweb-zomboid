@@ -1,0 +1,18 @@
+[Unit]
+Description=Project Zomboid Dedicated Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=pzserver
+WorkingDirectory=/home/pzserver
+ExecStart=/home/pzserver/pzserver start
+ExecStop=/home/pzserver/pzserver stop
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=300
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

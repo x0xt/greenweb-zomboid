@@ -1,0 +1,15 @@
+table ip pz-forward {
+    chain prerouting {
+        type nat hook prerouting priority dstnat;
+
+        iifname "${MAILMAN_PUBLIC_IFACE}" udp dport ${DEFAULT_PORT} dnat to ${ELITE_TAILSCALE_IP}:${DEFAULT_PORT}
+        iifname "${MAILMAN_PUBLIC_IFACE}" udp dport ${UDP_PORT} dnat to ${ELITE_TAILSCALE_IP}:${UDP_PORT}
+        iifname "${MAILMAN_PUBLIC_IFACE}" tcp dport ${RCON_PORT} dnat to ${ELITE_TAILSCALE_IP}:${RCON_PORT}
+    }
+
+    chain postrouting {
+        type nat hook postrouting priority srcnat;
+
+        oifname "vpn0" masquerade
+    }
+}
