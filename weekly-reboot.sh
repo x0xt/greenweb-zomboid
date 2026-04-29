@@ -21,4 +21,5 @@ sleep 15
 
 systemctl stop pzserver
 sudo -u pzserver bash -c 'cd /home/pzserver && ./pzserver update'
+python3 /home/pzserver/patch-trueactions.py
 systemctl start pzserver
