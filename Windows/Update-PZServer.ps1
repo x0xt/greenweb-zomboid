@@ -31,11 +31,18 @@
 param(
     [ValidateSet('Check','Daily','Now')]
     [string]$Mode = 'Check',
-    [string]$ConfigPath = (Join-Path $PSScriptRoot 'pzserver.json'),
+    [string]$ConfigPath,
     [switch]$WhatIfNoStart   # testing only: do everything except start the server
 )
 
 $ErrorActionPreference = 'Continue'   # NEVER 'Stop' - see THE ONE RULE above.
+
+# Windows PowerShell 5.1 leaves $PSScriptRoot EMPTY inside param() defaults, so the
+# script folder is resolved here in the body instead, with a fallback for good measure.
+$ScriptDir = $PSScriptRoot
+if (-not $ScriptDir) { $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition }
+if (-not $ScriptDir) { $ScriptDir = (Get-Location).Path }
+if (-not $ConfigPath) { $ConfigPath = Join-Path $ScriptDir 'pzserver.json' }
 
 # ---------------------------------------------------------------- config ----
 if (-not (Test-Path -LiteralPath $ConfigPath)) {
@@ -65,16 +72,16 @@ $RconPort     = Get-Cfg 'RconPort'     $null
 $RconPassword = Get-Cfg 'RconPassword' $null
 $StopTimeout  = [int](Get-Cfg 'StopTimeoutSeconds' 180)
 $Validate     = [bool](Get-Cfg 'Validate' $true)
-$LogPath      = Get-Cfg 'LogPath' (Join-Path $PSScriptRoot 'update-restart.log')
+$LogPath      = Get-Cfg 'LogPath' (Join-Path $ScriptDir 'update-restart.log')
 $BackupDir    = Get-Cfg 'BackupDir'    $null
 $SaveDir      = Get-Cfg 'SaveDir'      $null
 $BackupExtra  = Get-Cfg 'BackupExtraPaths' @()
 $BackupKeep   = [int](Get-Cfg 'BackupKeep' 14)
 $BackupMode   = Get-Cfg 'BackupMode'   'zip'      # zip | copy
-$StateFile    = Get-Cfg 'StateFile' (Join-Path $PSScriptRoot 'pzserver.state.json')
+$StateFile    = Get-Cfg 'StateFile' (Join-Path $ScriptDir 'pzserver.state.json')
 $MinHours     = [double](Get-Cfg 'MinHoursBetweenRestarts' 20)
 $RestartIfDown= [bool](Get-Cfg 'RestartIfDown' $true)
-$MaintFlag    = Get-Cfg 'MaintenanceFlagFile' (Join-Path $PSScriptRoot 'maintenance.flag')
+$MaintFlag    = Get-Cfg 'MaintenanceFlagFile' (Join-Path $ScriptDir 'maintenance.flag')
 $Warnings     = Get-Cfg 'Warnings' @(
     @{ SecondsBefore = 300; Message = 'Server restarting for updates in 5 minutes.' },
     @{ SecondsBefore = 120; Message = 'Server restarting in 2 minutes. Find a safe spot.' },
@@ -289,7 +296,7 @@ function Set-State($buildId) {
         [pscustomobject]@{
             LastRestartUtc = (Get-Date).ToUniversalTime().ToString('o')
             LastBuildId    = $buildId
-        } | ConvertTo-Json | Set-Content -LiteralPath $StateFile -Encoding utf8
+        } | ConvertTo-Json | Set-Content -LiteralPath $StateFile -Encoding ascii
     } catch { Write-Log "Could not write state file: $($_.Exception.Message)" 'WARN' }
 }
 

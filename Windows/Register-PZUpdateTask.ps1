@@ -27,13 +27,32 @@ param(
     [int]$CheckIntervalMinutes = 15,
     [string]$TaskName  = 'PZ Server Daily Restart',
     [string]$CheckTaskName = 'PZ Server Update Watcher',
-    [string]$ScriptPath = (Join-Path $PSScriptRoot 'Update-PZServer.ps1'),
-    [string]$ConfigPath = (Join-Path $PSScriptRoot 'pzserver.json'),
+    [string]$ScriptPath,
+    [string]$ConfigPath,
     [string]$RunAsUser = "$env:USERDOMAIN\$env:USERNAME",
+    [string]$PowerShellExe,
     [switch]$Local     # register in local time instead of UTC
 )
 
 $ErrorActionPreference = 'Stop'
+
+# $PSScriptRoot is empty inside param() defaults on Windows PowerShell 5.1.
+$ScriptDir = $PSScriptRoot
+if (-not $ScriptDir) { $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition }
+if (-not $ScriptDir) { $ScriptDir = (Get-Location).Path }
+if (-not $ScriptPath) { $ScriptPath = Join-Path $ScriptDir 'Update-PZServer.ps1' }
+if (-not $ConfigPath) { $ConfigPath = Join-Path $ScriptDir 'pzserver.json' }
+
+# Prefer PowerShell 7 (pwsh.exe) when it is installed; fall back to Windows
+# PowerShell 5.1. The scripts run on both, but 7 is the better host.
+if (-not $PowerShellExe) {
+    if (Get-Command pwsh.exe -ErrorAction SilentlyContinue) { $PowerShellExe = 'pwsh.exe' }
+    else { $PowerShellExe = 'powershell.exe' }
+}
+Write-Host "Tasks will run under: $PowerShellExe"
+if ($PowerShellExe -eq 'powershell.exe') {
+    Write-Host "  (PowerShell 7 not found. Install with: winget install --id Microsoft.PowerShell -e)"
+}
 
 if (-not (Test-Path -LiteralPath $ScriptPath)) { throw "Script not found: $ScriptPath" }
 if (-not (Test-Path -LiteralPath $ConfigPath)) { throw "Config not found: $ConfigPath" }
@@ -79,7 +98,7 @@ $xml = @"
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>powershell.exe</Command>
+      <Command>$PowerShellExe</Command>
       <Arguments>-NoProfile -ExecutionPolicy Bypass -File "$ScriptPath" -ConfigPath "$ConfigPath" -Mode Daily</Arguments>
     </Exec>
   </Actions>
@@ -123,7 +142,7 @@ $checkXml = @"
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>powershell.exe</Command>
+      <Command>$PowerShellExe</Command>
       <Arguments>-NoProfile -ExecutionPolicy Bypass -File "$ScriptPath" -ConfigPath "$ConfigPath" -Mode Check</Arguments>
     </Exec>
   </Actions>

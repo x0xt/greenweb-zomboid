@@ -46,6 +46,23 @@ being unable to join. Change it with `-CheckIntervalMinutes`.
 
 ## Setup
 
+**0. Install PowerShell 7.** Windows ships *Windows PowerShell 5.1* as `powershell.exe`,
+which is a different, older interpreter.
+
+```powershell
+winget install --id Microsoft.PowerShell -e
+```
+
+The scripts run on 5.1 too, but 7 is the supported target — and
+`Register-PZUpdateTask.ps1` auto-detects `pwsh.exe` and points the scheduled tasks
+at it, so install this **before** registering the tasks. Override with
+`-PowerShellExe`.
+
+⚠️ **`$PSScriptRoot` is empty inside `param()` defaults on 5.1** and populated on 7.
+That difference broke the first release of this script (it couldn't find its own
+config). It's fixed — the script folder is now resolved in the body — but it is the
+canonical example of why "it works on PowerShell" means nothing without a version.
+
 **1. Standalone SteamCMD** — <https://developer.valvesoftware.com/wiki/SteamCMD>.
 Unzip to `C:\steamcmd\`, run once so it self-updates.
 
@@ -145,5 +162,7 @@ and a fake save tree:
 - Both generated Task Scheduler XMLs parse, with the right UTC boundary,
   `PT15M` repetition, and `-Mode` arguments.
 
-**Not tested on real Windows against a live server.** Task Scheduler registration,
-the `Global\` mutex, and process detection by install path need one live run.
+**Tested on PowerShell 7 only** (Linux container). Windows PowerShell 5.1 is *supported
+but unverified* — the one 5.1 difference found so far, `$PSScriptRoot` in `param()`
+defaults, was found by a user, not by these tests. Task Scheduler registration, the
+`Global\` mutex, and process detection by install path also need one live run.
