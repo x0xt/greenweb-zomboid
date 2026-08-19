@@ -9,6 +9,16 @@
   "RconPort":    null,
   "RconPassword": null,
 
+  "SaveDir":     "C:\\Users\\CHANGEME\\Zomboid\\Saves\\Multiplayer\\servertest",
+  "BackupDir":   "D:\\pz-backups",
+  "BackupExtraPaths": [
+    "C:\\Users\\CHANGEME\\Zomboid\\Server"
+  ],
+  "BackupKeep":  14,
+  "BackupMode":  "zip",
+
+  "MinHoursBetweenRestarts": 20,
+  "StateFile":   "C:\\pzserver-tools\\pzserver.state.json",
   "StopTimeoutSeconds": 180,
   "Validate": true,
   "LogPath": "C:\\pzserver-tools\\update-restart.log",

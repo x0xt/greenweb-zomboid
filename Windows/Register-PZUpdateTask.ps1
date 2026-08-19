@@ -24,7 +24,9 @@
 param(
     [ValidatePattern('^([01]\d|2[0-3]):[0-5]\d$')]
     [string]$UtcTime   = '14:00',
-    [string]$TaskName  = 'PZ Server Nightly Update',
+    [int]$CheckIntervalMinutes = 15,
+    [string]$TaskName  = 'PZ Server Daily Restart',
+    [string]$CheckTaskName = 'PZ Server Update Watcher',
     [string]$ScriptPath = (Join-Path $PSScriptRoot 'Update-PZServer.ps1'),
     [string]$ConfigPath = (Join-Path $PSScriptRoot 'pzserver.json'),
     [string]$RunAsUser = "$env:USERDOMAIN\$env:USERNAME",
@@ -78,7 +80,51 @@ $xml = @"
   <Actions Context="Author">
     <Exec>
       <Command>powershell.exe</Command>
-      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "$ScriptPath" -ConfigPath "$ConfigPath"</Arguments>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "$ScriptPath" -ConfigPath "$ConfigPath" -Mode Daily</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+
+$checkXml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Project Zomboid: poll Steam every $CheckIntervalMinutes minutes and restart only if a new build has been published.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>$boundary</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT${CheckIntervalMinutes}M</Interval>
+        <Duration>P1D</Duration>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>$RunAsUser</UserId>
+      <LogonType>Password</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "$ScriptPath" -ConfigPath "$ConfigPath" -Mode Check</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -88,14 +134,17 @@ Write-Host "Registering '$TaskName' to run daily at $desc as $RunAsUser"
 Write-Host "You will be prompted for that account's Windows password."
 Write-Host ""
 
-Register-ScheduledTask -TaskName $TaskName -Xml $xml -User $RunAsUser -Password (
-    Read-Host -Prompt "Windows password for $RunAsUser" -AsSecureString |
-        ForEach-Object { [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-            [Runtime.InteropServices.Marshal]::SecureStringToBSTR($_)) }
-) -Force | Out-Null
+$pw = Read-Host -Prompt "Windows password for $RunAsUser" -AsSecureString
+$plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+             [Runtime.InteropServices.Marshal]::SecureStringToBSTR($pw))
+
+Register-ScheduledTask -TaskName $TaskName      -Xml $xml      -User $RunAsUser -Password $plain -Force | Out-Null
+Register-ScheduledTask -TaskName $CheckTaskName -Xml $checkXml -User $RunAsUser -Password $plain -Force | Out-Null
+$plain = $null
 
 Write-Host ""
-Write-Host "Done. Next run:"
-(Get-ScheduledTask -TaskName $TaskName | Get-ScheduledTaskInfo).NextRunTime
+Write-Host "Done."
+Write-Host ("  {0,-28} next: {1}" -f $TaskName,      (Get-ScheduledTask -TaskName $TaskName      | Get-ScheduledTaskInfo).NextRunTime)
+Write-Host ("  {0,-28} next: {1}  (every $CheckIntervalMinutes min)" -f $CheckTaskName, (Get-ScheduledTask -TaskName $CheckTaskName | Get-ScheduledTaskInfo).NextRunTime)
 Write-Host ""
-Write-Host "Test it now with:  Start-ScheduledTask -TaskName '$TaskName'"
+Write-Host "Test now:  Start-ScheduledTask -TaskName '$CheckTaskName'"

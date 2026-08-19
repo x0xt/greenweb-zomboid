@@ -1,10 +1,18 @@
 <#
 .SYNOPSIS
-    Scheduled SteamCMD update + restart for a Project Zomboid dedicated server on Windows.
+    SteamCMD update watcher, restarter and backup for a Project Zomboid
+    dedicated server on Windows.
 
 .DESCRIPTION
-    Warns players over RCON, saves the world, shuts down cleanly, runs steamcmd,
-    and starts the server again.
+    -Mode Check    Poll Steam for a new build. Restart ONLY if one landed.
+                   Cheap; meant to run every 15 minutes.
+    -Mode Daily    Scheduled restart, skipped if a restart already happened
+                   within MinHoursBetweenRestarts (so an update restart at
+                   13:50 doesn't get followed by a pointless one at 14:00).
+    -Mode Now      Restart immediately, no questions.
+
+    A restart cycle is: warn players over RCON -> save -> clean quit ->
+    back up the world -> steamcmd update -> start.
 
     THE ONE RULE: the start is unconditional and every early exit leaves the
     server RUNNING. A Linux sibling of this script once used `set -e`; steamcmd
@@ -12,11 +20,17 @@
     start, and the server was down for 19 hours. A skipped update is a
     non-event. A server down all day is not.
 
+    THE SECOND RULE: in -Mode Check, an *unknown* remote build must NEVER count
+    as "new". Failing open there would restart the server every 15 minutes.
+    Check mode fails CLOSED; every other path fails open toward updating.
+
 .PARAMETER ConfigPath
     Path to the .json config. Defaults to pzserver.json next to this script.
 #>
 [CmdletBinding()]
 param(
+    [ValidateSet('Check','Daily','Now')]
+    [string]$Mode = 'Check',
     [string]$ConfigPath = (Join-Path $PSScriptRoot 'pzserver.json'),
     [switch]$WhatIfNoStart   # testing only: do everything except start the server
 )
@@ -52,6 +66,13 @@ $RconPassword = Get-Cfg 'RconPassword' $null
 $StopTimeout  = [int](Get-Cfg 'StopTimeoutSeconds' 180)
 $Validate     = [bool](Get-Cfg 'Validate' $true)
 $LogPath      = Get-Cfg 'LogPath' (Join-Path $PSScriptRoot 'update-restart.log')
+$BackupDir    = Get-Cfg 'BackupDir'    $null
+$SaveDir      = Get-Cfg 'SaveDir'      $null
+$BackupExtra  = Get-Cfg 'BackupExtraPaths' @()
+$BackupKeep   = [int](Get-Cfg 'BackupKeep' 14)
+$BackupMode   = Get-Cfg 'BackupMode'   'zip'      # zip | copy
+$StateFile    = Get-Cfg 'StateFile' (Join-Path $PSScriptRoot 'pzserver.state.json')
+$MinHours     = [double](Get-Cfg 'MinHoursBetweenRestarts' 20)
 $Warnings     = Get-Cfg 'Warnings' @(
     @{ SecondsBefore = 300; Message = 'Server restarting for updates in 5 minutes.' },
     @{ SecondsBefore = 120; Message = 'Server restarting in 2 minutes. Find a safe spot.' },
@@ -188,6 +209,94 @@ function Send-ServerMessage([string]$text) {
     if (-not $r.Ok) { Write-Log "RCON servermsg failed: $($r.Error)" 'WARN' }
 }
 
+
+# ------------------------------------------------------------- build ids ----
+$manifest = Join-Path $InstallDir "steamapps\appmanifest_$AppId.acf"
+
+function Get-LocalBuildId {
+    if (-not (Test-Path -LiteralPath $manifest)) { return $null }
+    foreach ($l in (Get-Content -LiteralPath $manifest)) {
+        if ($l -match '"buildid"\s+"(\d+)"') { return $Matches[1] }
+    }
+    return $null
+}
+
+# Latest public build, per Steam. Returns $null if it cannot be determined -
+# callers in Check mode MUST treat $null as "no update" (see THE SECOND RULE).
+function Get-RemoteBuildId {
+    if (-not (Test-Path -LiteralPath $SteamCmd)) { return $null }
+    try {
+        $out = & $SteamCmd +login anonymous +app_info_update 1 +app_info_print "$AppId" +quit 2>&1 | Out-String
+    } catch { return $null }
+    # Walk into "branches" -> "public" -> "buildid"
+    $inBranches = $false; $inPublic = $false; $depth = 0
+    foreach ($line in ($out -split "`r?`n")) {
+        $t = $line.Trim()
+        if (-not $inBranches) { if ($t -eq '"branches"') { $inBranches = $true }; continue }
+        if (-not $inPublic) {
+            if ($t -eq '"public"') { $inPublic = $true; $depth = 0 }
+            continue
+        }
+        if ($t -eq '{') { $depth++; continue }
+        if ($t -eq '}') { if (--$depth -le 0) { break }; continue }
+        if ($t -match '^"buildid"\s+"(\d+)"$') { return $Matches[1] }
+    }
+    return $null
+}
+
+# ----------------------------------------------------------------- state ----
+function Get-State {
+    if (Test-Path -LiteralPath $StateFile) {
+        try { return Get-Content -LiteralPath $StateFile -Raw | ConvertFrom-Json } catch { }
+    }
+    return [pscustomobject]@{ LastRestartUtc = $null; LastBuildId = $null }
+}
+function Set-State($buildId) {
+    try {
+        [pscustomobject]@{
+            LastRestartUtc = (Get-Date).ToUniversalTime().ToString('o')
+            LastBuildId    = $buildId
+        } | ConvertTo-Json | Set-Content -LiteralPath $StateFile -Encoding utf8
+    } catch { Write-Log "Could not write state file: $($_.Exception.Message)" 'WARN' }
+}
+
+# ------------------------------------------------------------- mode gate ----
+$state       = Get-State
+$localBuild  = Get-LocalBuildId
+$updateFound = $false
+
+switch ($Mode) {
+    'Check' {
+        $remote = Get-RemoteBuildId
+        if (-not $remote) {
+            # FAIL CLOSED. Unknown != new, or we would restart every poll.
+            Write-Log "Could not read the remote build id; treating as no update." 'WARN'
+            $mutex.ReleaseMutex(); exit 0
+        }
+        if (-not $localBuild) {
+            Write-Log "No local appmanifest yet - treating as an update." 
+            $updateFound = $true
+        } elseif ($remote -ne $localBuild) {
+            Write-Log "UPDATE FOUND: local $localBuild -> Steam $remote"
+            $updateFound = $true
+        } else {
+            Write-Log "Up to date (build $localBuild). Nothing to do."
+            $mutex.ReleaseMutex(); exit 0
+        }
+    }
+    'Daily' {
+        if ($state.LastRestartUtc) {
+            $age = ((Get-Date).ToUniversalTime() - [datetime]::Parse($state.LastRestartUtc).ToUniversalTime()).TotalHours
+            if ($age -lt $MinHours) {
+                Write-Log ("Last restart was {0:N1}h ago (< {1}h). Skipping the daily restart." -f $age, $MinHours)
+                $mutex.ReleaseMutex(); exit 0
+            }
+        }
+        Write-Log 'Daily scheduled restart.'
+    }
+    'Now' { Write-Log 'Manual restart requested.' }
+}
+
 # ------------------------------------------------- find the running server ---
 function Get-ServerProcess {
     $dir = (Resolve-Path -LiteralPath $InstallDir -ErrorAction SilentlyContinue).Path
@@ -246,15 +355,52 @@ if ($running.Count -eq 0) {
     Write-Log 'Server stopped cleanly.'
 }
 
-# ---------------------------------------------------------------- update ----
-$manifest = Join-Path $InstallDir "steamapps\appmanifest_$AppId.acf"
-function Get-LocalBuildId {
-    if (-not (Test-Path -LiteralPath $manifest)) { return $null }
-    foreach ($l in (Get-Content -LiteralPath $manifest)) {
-        if ($l -match '"buildid"\s+"(\d+)"') { return $Matches[1] }
+
+# ---------------------------------------------------------------- backup ----
+# Runs with the server STOPPED, which is the only point the save is guaranteed
+# consistent. A backup failure must not stop the restart.
+function Invoke-Backup {
+    if (-not $BackupDir) { Write-Log 'No BackupDir configured - skipping backup.' 'WARN'; return }
+    if (-not $SaveDir)   { Write-Log 'No SaveDir configured - skipping backup.'   'WARN'; return }
+    if (-not (Test-Path -LiteralPath $SaveDir)) { Write-Log "SaveDir not found: $SaveDir" 'WARN'; return }
+    try {
+        if (-not (Test-Path -LiteralPath $BackupDir)) {
+            New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
+        }
+        $stamp   = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
+        $sources = @($SaveDir) + @($BackupExtra | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
+
+        if ($BackupMode -eq 'copy') {
+            $dest = Join-Path $BackupDir "pz-$stamp"
+            New-Item -ItemType Directory -Path $dest -Force | Out-Null
+            foreach ($src in $sources) {
+                Copy-Item -LiteralPath $src -Destination $dest -Recurse -Force -ErrorAction Stop
+            }
+            $size = (Get-ChildItem -LiteralPath $dest -Recurse -File | Measure-Object Length -Sum).Sum
+            Write-Log ("Backup written: {0} ({1:N0} MB)" -f $dest, ($size / 1MB))
+        } else {
+            $zip = Join-Path $BackupDir "pz-$stamp.zip"
+            Compress-Archive -Path $sources -DestinationPath $zip -CompressionLevel Optimal -ErrorAction Stop
+            Write-Log ("Backup written: {0} ({1:N0} MB)" -f $zip, ((Get-Item -LiteralPath $zip).Length / 1MB))
+        }
+
+        # retention
+        if ($BackupKeep -gt 0) {
+            $old = @(Get-ChildItem -LiteralPath $BackupDir -Filter 'pz-*' |
+                     Sort-Object LastWriteTime -Descending | Select-Object -Skip $BackupKeep)
+            foreach ($o in $old) {
+                Remove-Item -LiteralPath $o.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Log "Pruned old backup: $($o.Name)"
+            }
+        }
+    } catch {
+        Write-Log "BACKUP FAILED: $($_.Exception.Message) - continuing with the restart anyway." 'ERROR'
     }
-    return $null
 }
+
+Invoke-Backup
+
+# ---------------------------------------------------------------- update ----
 $before = Get-LocalBuildId
 
 if (Test-Path -LiteralPath $SteamCmd) {
@@ -279,6 +425,10 @@ if (Test-Path -LiteralPath $SteamCmd) {
 } else {
     Write-Log "steamcmd not found at $SteamCmd - skipping update, still restarting." 'ERROR'
 }
+
+# The restart cycle is done at this point; record it before the start so that a
+# start failure (or -WhatIfNoStart) can't make Daily mode forget it happened.
+Set-State (Get-LocalBuildId)
 
 # ----------------------------------------------------------------- start ----
 # Unconditional. Every path above reaches here or exits with the server up.
