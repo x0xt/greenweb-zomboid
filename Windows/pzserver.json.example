@@ -1,0 +1,22 @@
+{
+  "InstallDir":  "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Project Zomboid Dedicated Server",
+  "StartScript": "StartServer64.bat",
+  "SteamCmd":    "C:\\steamcmd\\steamcmd.exe",
+  "AppId":       380870,
+
+  "ServerIni":   "C:\\Users\\CHANGEME\\Zomboid\\Server\\servertest.ini",
+  "RconHost":    "127.0.0.1",
+  "RconPort":    null,
+  "RconPassword": null,
+
+  "StopTimeoutSeconds": 180,
+  "Validate": true,
+  "LogPath": "C:\\pzserver-tools\\update-restart.log",
+
+  "Warnings": [
+    { "SecondsBefore": 300, "Message": "Server restarting for updates in 5 minutes." },
+    { "SecondsBefore": 120, "Message": "Server restarting in 2 minutes. Find a safe spot." },
+    { "SecondsBefore": 60,  "Message": "Server restarting in 1 minute. Log out safely if you can." },
+    { "SecondsBefore": 10,  "Message": "Restarting now. Back in a few minutes." }
+  ]
+}
