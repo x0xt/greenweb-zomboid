@@ -18,6 +18,8 @@
   "BackupMode":  "zip",
 
   "MinHoursBetweenRestarts": 20,
+  "RestartIfDown": true,
+  "MaintenanceFlagFile": "C:\\pzserver-tools\\maintenance.flag",
   "StateFile":   "C:\\pzserver-tools\\pzserver.state.json",
   "StopTimeoutSeconds": 180,
   "Validate": true,

@@ -73,6 +73,8 @@ $BackupKeep   = [int](Get-Cfg 'BackupKeep' 14)
 $BackupMode   = Get-Cfg 'BackupMode'   'zip'      # zip | copy
 $StateFile    = Get-Cfg 'StateFile' (Join-Path $PSScriptRoot 'pzserver.state.json')
 $MinHours     = [double](Get-Cfg 'MinHoursBetweenRestarts' 20)
+$RestartIfDown= [bool](Get-Cfg 'RestartIfDown' $true)
+$MaintFlag    = Get-Cfg 'MaintenanceFlagFile' (Join-Path $PSScriptRoot 'maintenance.flag')
 $Warnings     = Get-Cfg 'Warnings' @(
     @{ SecondsBefore = 300; Message = 'Server restarting for updates in 5 minutes.' },
     @{ SecondsBefore = 120; Message = 'Server restarting in 2 minutes. Find a safe spot.' },
@@ -210,6 +212,37 @@ function Send-ServerMessage([string]$text) {
 }
 
 
+# ------------------------------------------------- find / start the server ---
+function Get-ServerProcess {
+    $dir = (Resolve-Path -LiteralPath $InstallDir -ErrorAction SilentlyContinue).Path
+    if (-not $dir) { return $null }
+    Get-Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            $p = $null
+            try { $p = $_.Path } catch { }
+            $p -and $p.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase)
+        }
+}
+
+# Returns 0 on success. Callers decide what to do; nothing here exits.
+function Start-PZServer {
+    $bat = Join-Path $InstallDir $StartScript
+    if ($WhatIfNoStart) { Write-Log "-WhatIfNoStart set: would have started $bat"; return 0 }
+    if (-not (Test-Path -LiteralPath $bat)) {
+        Write-Log "START SCRIPT MISSING: $bat - THE SERVER IS DOWN." 'ERROR'; return 1
+    }
+    Write-Log "Starting server: $bat"
+    try {
+        Start-Process -FilePath $bat -WorkingDirectory $InstallDir -WindowStyle Minimized | Out-Null
+    } catch {
+        Write-Log "FAILED TO START THE SERVER: $($_.Exception.Message)" 'ERROR'; return 1
+    }
+    Start-Sleep -Seconds 20
+    if (@(Get-ServerProcess).Count -gt 0) { Write-Log 'Server process is up.' }
+    else { Write-Log 'Server process not visible 20s after launch - check the server console.' 'WARN' }
+    return 0
+}
+
 # ------------------------------------------------------------- build ids ----
 $manifest = Join-Path $InstallDir "steamapps\appmanifest_$AppId.acf"
 
@@ -280,7 +313,19 @@ switch ($Mode) {
             Write-Log "UPDATE FOUND: local $localBuild -> Steam $remote"
             $updateFound = $true
         } else {
-            Write-Log "Up to date (build $localBuild). Nothing to do."
+            # No update. Before leaving, act as a cheap watchdog: the .bat has no
+            # supervisor, so a crash would otherwise sit unnoticed until the next
+            # build drops. Bounded by the poll interval.
+            if ($RestartIfDown -and (@(Get-ServerProcess).Count -eq 0)) {
+                if (Test-Path -LiteralPath $MaintFlag) {
+                    Write-Log "Server is down, but $MaintFlag exists - leaving it alone."
+                } else {
+                    Write-Log 'Server is DOWN and no update is pending - restarting it (watchdog).' 'WARN'
+                    $null = Start-PZServer
+                }
+            } else {
+                Write-Log "Up to date (build $localBuild). Nothing to do."
+            }
             $mutex.ReleaseMutex(); exit 0
         }
     }
@@ -298,16 +343,6 @@ switch ($Mode) {
 }
 
 # ------------------------------------------------- find the running server ---
-function Get-ServerProcess {
-    $dir = (Resolve-Path -LiteralPath $InstallDir -ErrorAction SilentlyContinue).Path
-    if (-not $dir) { return $null }
-    Get-Process -ErrorAction SilentlyContinue |
-        Where-Object {
-            $p = $null
-            try { $p = $_.Path } catch { }
-            $p -and $p.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase)
-        }
-}
 
 $running = @(Get-ServerProcess)
 if ($running.Count -eq 0) {
@@ -432,29 +467,8 @@ Set-State (Get-LocalBuildId)
 
 # ----------------------------------------------------------------- start ----
 # Unconditional. Every path above reaches here or exits with the server up.
-$bat = Join-Path $InstallDir $StartScript
-if ($WhatIfNoStart) {
-    Write-Log "-WhatIfNoStart set: would have started $bat"
-    $mutex.ReleaseMutex()
-    exit 0
-}
-if (-not (Test-Path -LiteralPath $bat)) {
-    Write-Log "START SCRIPT MISSING: $bat - THE SERVER IS DOWN." 'ERROR'
-    $mutex.ReleaseMutex()
-    exit 1
-}
-Write-Log "Starting server: $bat"
-try {
-    Start-Process -FilePath $bat -WorkingDirectory $InstallDir -WindowStyle Minimized | Out-Null
-} catch {
-    Write-Log "FAILED TO START THE SERVER: $($_.Exception.Message)" 'ERROR'
-    $mutex.ReleaseMutex()
-    exit 1
-}
-
-Start-Sleep -Seconds 20
-if (@(Get-ServerProcess).Count -gt 0) { Write-Log 'Server process is up.' }
-else { Write-Log 'Server process not visible 20s after launch - check the server console.' 'WARN' }
+$rc = Start-PZServer
+if ($rc -ne 0) { $mutex.ReleaseMutex(); exit $rc }
 
 Write-Log '=== run finished ==='
 $mutex.ReleaseMutex()

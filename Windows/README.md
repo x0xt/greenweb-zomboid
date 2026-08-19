@@ -16,7 +16,7 @@ Two scheduled tasks share one script:
 - **PZ Server Update Watcher** — every **15 minutes**, asks Steam for the current
   build id and compares it to the installed one. Restarts **only** if a new build
   landed. Costs one lightweight Steam call; does nothing else the other 95 times a
-  day.
+  day. Also acts as a **crash watchdog** — see Gotchas.
 - **PZ Server Daily Restart** — the once-a-day restart, **skipped** if a restart
   already happened in the last `MinHoursBetweenRestarts` (default 20). So an update
   restart at 13:50 doesn't get followed by a pointless one at 14:00.
@@ -114,10 +114,17 @@ consistent — a backup of a running PZ server can catch a half-written chunk.
 - **UTC means the local clock time shifts.** 14:00 UTC is 9 AM Eastern in winter and
   10 AM in summer (Eastern is UTC-4 under DST). That's the tradeoff for a schedule
   that never drifts. Use `-Local` for a fixed wall-clock time instead.
-- **No crash recovery.** `StartServer64.bat` has no supervisor — a 3 AM crash stays
-  down until the watcher next finds an update, which could be days. If that matters,
-  wrap the .bat in a service with [NSSM](https://nssm.cc/); that's the real
-  equivalent of `Restart=on-failure` in the Linux unit. Not built here.
+- **Crash recovery is the watchdog, not a service wrapper.** `StartServer64.bat` has
+  no supervisor. Rather than add one, the 15-minute watcher doubles as a watchdog:
+  if no update is pending and the server process is gone, it starts it. Worst case
+  downtime is one poll interval. Set `RestartIfDown: false` to disable.
+  **Stopping the server by hand will therefore bring it back within 15 minutes** —
+  create the `maintenance.flag` file (path configurable) to hold it down, delete it
+  to resume.
+  If a real service wrapper is ever wanted, use [Shawl](https://github.com/mtkennerly/shawl)
+  (actively released) — **not NSSM**, whose last stable is 2014 and whose own
+  download page tells Windows 10 Creators Update and later to run a 2017
+  pre-release or services fail to start.
 
 ## What was tested
 
@@ -133,6 +140,8 @@ and a fake save tree:
 - SteamCMD exiting non-zero → **server still started.**
 - Missing config, malformed config, SteamCMD absent → all handled.
 - Backups: valid zip, correct contents, retention prunes to `BackupKeep`.
+- Watchdog: restarts a downed server, respects `maintenance.flag`, obeys
+  `RestartIfDown: false`, and doesn't interfere with the update path.
 - Both generated Task Scheduler XMLs parse, with the right UTC boundary,
   `PT15M` repetition, and `-Mode` arguments.
 
